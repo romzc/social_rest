@@ -26,6 +26,10 @@ const UserModel = mongoose.Schema({
     created_at: {
         type: Date,
         default: Date.now
+    },
+    password: {
+        type: String,
+        required: true
     }
 });
 
