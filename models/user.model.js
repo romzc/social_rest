@@ -16,12 +16,16 @@ const UserModel = mongoose.Schema({
         type: String,
         required: true
     },
+    bio: {
+        type: String
+    },
     role: {
         type: String,
         default: 'role_user'
     },
     image: {
-        type: String
+        type: String,
+        default: 'image_user.png'
     },
     created_at: {
         type: Date,

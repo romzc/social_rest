@@ -1,9 +1,17 @@
 const User = require('../models/user.model');
+
+// this moudle let us to paginate every result of the search.
+const mongoosePagination = require('mongoose-pagination');
+const fs = require('fs');
+const path = require('path');
 const bcrypt = require('bcrypt');
+
+// import jwt service
+const jwtService = require('../services/jwt.service');
 
 
 const pruebaUser = (req, res) => {
-    return res.status(200).json({ message: "prueba" });
+    return res.status(200).json({ message: "prueba", usuario: req.user });
 }
 
 
@@ -40,11 +48,13 @@ const register = (req, res) => {
 
         // save user to database
         newUser.save((error, userStored) => {
-            if (error || !userStored) return res.status(500).json({ states: "error", message: "error at saving user" })
+            if ( error || !userStored ) return res.status(500).json({ states: "error", message: "error at saving user" })
 
+            let userToSend =  userStored.toObject();
+            delete userToSend.password;
             // return new user and a response object
             return res.status(200).json({
-                userStored,
+                userToSend,
                 status: "succes",
                 message: "user created"
             });
@@ -70,15 +80,15 @@ const login = (req, res) => {
             const pwd = bcrypt.compareSync(data.password, user.password)
             if(!pwd) return res.status(400).json({ states: "error", message:"password error"})
 
-            // return a token
-            const token = false;            
+            // generate a token
+            const token = jwtService.generateToken(user);            
         
             // return a response with data.
             return res.status(200).json({
                 status: "success", 
                 message: "login", 
                 user: {
-                    id: user.id,
+                    id: user._id,
                     name: user.name,
                     email: user.email,
                     nickname: user.nickname
@@ -88,9 +98,186 @@ const login = (req, res) => {
     });
 };
 
+const userProfile = (req, res) => {
+    // Get user id from request parameters
+    const userId = req.params.id
+
+    // request for user in database
+    User.findById(userId)
+        .select({password: 0, role: 0})
+        .exec((err, userProfile) => {
+            if( err || !userProfile ) {
+                return res.status(404).send({ stat: "error", message: "user not found" });
+            }
+
+            // return a responser with user profile
+            // later we will show user follower
+            return res.status(200).json({ status: "success", userProfile: userProfile});
+    })
+};
+
+const listUsers = (req, res) => {
+    // get an specific page to list users.
+    let page = 1;
+    if (req.params.page) {
+        page = req.params.page;
+    }
+    page = parseInt(page);
+    
+    // get a list of users with mongoose pagination
+    const itemsPerPage = 5;
+    
+    User.find().sort('_id').paginate( page, itemsPerPage, (err, users, total) => {
+        if (err || !users ) {
+            return res.status(404).json({
+                status: "error", 
+                message: "Not allowed users" 
+            });
+        }
+        // return laterly informtion about user's followers.
+        return res.status(200).send({
+            stat: "success",
+            users,
+            page,
+            total,
+            itemsPerPage,
+            pages: Math.ceil(total / itemsPerPage)
+        });
+    })
+}
+
+const userUpdate = (req, res) => {
+    // get user info to update
+    const userIdentity = req.user;
+    const userToUpdate = req.body;
+
+    // check if user exists
+    delete userToUpdate.iat;
+    delete userToUpdate.exp;
+    delete userToUpdate.role;
+    delete userToUpdate.image;
+
+
+    // search for user and update him
+    User.find({
+        $or: [
+            { email: userToUpdate.email.toLowerCase() },
+            { nickname: userToUpdate.nickname.toLowerCase() }
+        ]
+    }).exec(async (error, users) => {
+        if (error) {
+            return res.status(500).json({ message: "error creating new user", status: error });
+        }
+
+        let userIsSet = false;
+
+        users.forEach(user => {
+            if(user && user._id != userIdentity.id) userIsSet = true;
+        });
+
+        if ( userIsSet ) {
+            return res.status(200).send({ status: "succes", message: "user data is already used" });
+        }
+
+        // if we find user passwrod encryp it.
+        if (userToUpdate.password) {
+            // encrypt user password
+            const passwordEncripted = await bcrypt.hash(userToUpdate.password, 10);
+            userToUpdate.password = passwordEncripted;
+        }
+
+        User.findByIdAndUpdate(userIdentity.id, userToUpdate, {new: true}, (error, userUpdate)=>{
+            if (error || !userUpdate) 
+                return res.status(500).send({
+                    status: "succes", 
+                    message: "error while updating user" 
+                });
+            
+            return res.status(200).json({
+                status: "success",
+                message: "User updated", 
+                user: userUpdate
+            })
+        })
+    });
+}
+
+const upload = (req, res) => {
+    // get image file and check if it exists
+    if( !req.file ) {
+        return res.status(404).send({
+            status: "error",
+            message: "request doesn't include image file"
+        })
+    }
+
+    // get image filename 
+    const image = req.file.originalname;
+
+    // get file extension and check if it exists in allowed extensions,
+    const imageSplit = image.split("\.");
+    let extension = imageSplit[1];
+
+    // if it is not in allowed extensions, delete file
+    if( extension != "jpg" && extension != "png" && extension != "jpeg" && extension != "gif" ) {
+        const filePath = req.file.path;
+        const fileDeleted = fs.unlinkSync(filePath);
+        return res.status(400).send({
+            status: "error",
+            message: "Image extension not allowed"
+        })
+    }
+    // otherwise update user profile image
+    User.findOneAndUpdate(req.user.id, {image: req.file.filename}, {new: true},(error, userUpdated) => {
+        if( error || !userUpdated ) {
+            return res.status(500).send({
+                status: "error",
+                message: "error while updating user"
+            });
+        }
+        
+        // finally return an object with user information
+        return res.status(200).send({
+            status: "success",
+            user: userUpdated,
+            file: req.file,
+        }) 
+    })
+}
+
+const avatar = (req, res) => {
+    // get parameter from url
+    const file = req.params.file;
+
+    // mount image real path
+    const filePath = "./uploads/avatars/" + file;
+
+    // check if image exists
+    fs.stat(filePath, (error, exist) => {
+        
+        if(error || !exist) {
+            return res.status(404).send({
+                status: "error",
+                message: "image not found"
+            });
+        }
+
+
+        // return file
+        return res.status(200).sendFile(path.resolve(filePath));
+    })
+
+}
+
+
 module.exports = {
     pruebaUser,
     register,
-    login
+    login,
+    userProfile,
+    listUsers,
+    userUpdate,
+    upload,
+    avatar
 }
 
