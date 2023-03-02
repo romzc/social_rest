@@ -2,6 +2,7 @@ const express = require('express');
 const router= express.Router();
 const UserController = require('../controllers/user.controller');
 
+
 // import multer
 const multer = require('multer');
 const { auth } = require('../middlewares/auth');
@@ -21,7 +22,8 @@ router.get('/user-test', auth, UserController.pruebaUser);
 router.get('/profile/:id',auth, UserController.userProfile);
 router.get('/list/:page?',auth, UserController.listUsers);
 
-router.get('/avatar/:file', auth, UserController.avatar)
+router.get('/avatar/:file', UserController.avatar);
+router.get('/counters/:id', auth, UserController.counters);
 
 router.put('/update', auth, UserController.userUpdate);
 

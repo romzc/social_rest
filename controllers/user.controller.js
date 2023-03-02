@@ -1,4 +1,7 @@
 const User = require('../models/user.model');
+const Follow = require('../models/follow.model');
+const Publication = require('../models/publication.model');
+const {validate} = require('../helpers/validate');
 
 // this moudle let us to paginate every result of the search.
 const mongoosePagination = require('mongoose-pagination');
@@ -8,7 +11,7 @@ const bcrypt = require('bcrypt');
 
 // import jwt service
 const jwtService = require('../services/jwt.service');
-
+const followService = require('../services/follow.service');
 
 const pruebaUser = (req, res) => {
     return res.status(200).json({ message: "prueba", usuario: req.user });
@@ -23,6 +26,13 @@ const register = (req, res) => {
     // check if the data is valid
     if (!params.name || !params.email || !params.password || !params.nickname) {
         return res.status(400).json({ message: "missing data" });
+    }
+
+    // validacion avanzada
+    try {
+        validate(params);
+    } catch (err) {
+        return res.status(400).send({ status: "succes", message: "validacion no superada" });
     }
 
     // check if user is already registered
@@ -105,17 +115,26 @@ const userProfile = (req, res) => {
     // request for user in database
     User.findById(userId)
         .select({password: 0, role: 0})
-        .exec((err, userProfile) => {
+        .exec( async (err, userProfile) => {
             if( err || !userProfile ) {
                 return res.status(404).send({ stat: "error", message: "user not found" });
             }
 
+            // info de seguimiento
+            const followInfo = await followService.followThisUser(req.user.id, userId)
+
             // return a responser with user profile
             // later we will show user follower
-            return res.status(200).json({ status: "success", userProfile: userProfile});
+            return res.status(200).json({ 
+                status: "success", 
+                userProfile: userProfile,
+                following: followInfo.following,
+                follower: followInfo.follower
+            });
     })
 };
 
+// retoruna un liasta de usuarios
 const listUsers = (req, res) => {
     // get an specific page to list users.
     let page = 1;
@@ -127,13 +146,17 @@ const listUsers = (req, res) => {
     // get a list of users with mongoose pagination
     const itemsPerPage = 5;
     
-    User.find().sort('_id').paginate( page, itemsPerPage, (err, users, total) => {
+    User.find().select("-password -email -role -__v").sort('_id').paginate( page, itemsPerPage, async (err, users, total) => {
         if (err || !users ) {
             return res.status(404).json({
                 status: "error", 
                 message: "Not allowed users" 
             });
         }
+
+        // get an array of user who follow other person and also follow me.
+        const followUserIds = await followService.followUserIds(req.user.id);
+
         // return laterly informtion about user's followers.
         return res.status(200).send({
             stat: "success",
@@ -141,7 +164,9 @@ const listUsers = (req, res) => {
             page,
             total,
             itemsPerPage,
-            pages: Math.ceil(total / itemsPerPage)
+            pages: Math.ceil(total / itemsPerPage),
+            user_following: followUserIds.following,
+            user_follow_me: followUserIds.followers
         });
     })
 }
@@ -184,9 +209,12 @@ const userUpdate = (req, res) => {
             // encrypt user password
             const passwordEncripted = await bcrypt.hash(userToUpdate.password, 10);
             userToUpdate.password = passwordEncripted;
+
+        } else {
+            delete userToUpdate.password;
         }
 
-        User.findByIdAndUpdate(userIdentity.id, userToUpdate, {new: true}, (error, userUpdate)=>{
+        User.findByIdAndUpdate({_id: userIdentity.id}, userToUpdate, {new: true}, (error, userUpdate)=>{
             if (error || !userUpdate) 
                 return res.status(500).send({
                     status: "succes", 
@@ -228,7 +256,7 @@ const upload = (req, res) => {
         })
     }
     // otherwise update user profile image
-    User.findOneAndUpdate(req.user.id, {image: req.file.filename}, {new: true},(error, userUpdated) => {
+    User.findOneAndUpdate({_id: req.user.id}, {image: req.file.filename}, {new: true},(error, userUpdated) => {
         if( error || !userUpdated ) {
             return res.status(500).send({
                 status: "error",
@@ -250,7 +278,7 @@ const avatar = (req, res) => {
     const file = req.params.file;
 
     // mount image real path
-    const filePath = "./uploads/avatars/" + file;
+    const filePath = `./uploads/avatars/${file}`;
 
     // check if image exists
     fs.stat(filePath, (error, exist) => {
@@ -261,12 +289,34 @@ const avatar = (req, res) => {
                 message: "image not found"
             });
         }
-
-
         // return file
         return res.status(200).sendFile(path.resolve(filePath));
     })
+}
 
+const counters = async (req, res) => {
+    let userId = req.user.id;
+
+    if ( req.params.id ) userId = req.params.id
+
+    try {
+        const following = await Follow.count({user: userId})
+        const followers = await Follow.count({followed: userId})
+        const publications = await Publication.count({user: userId})
+
+        return res.status(200).json({
+            userId: userId,
+            following: following,
+            followers: followers,
+            publications: publications
+        })
+
+    } catch (e) {
+        return res.status(500).send({
+            status: "error",
+            message: "error while getting data"
+        })
+    }
 }
 
 
@@ -278,6 +328,7 @@ module.exports = {
     listUsers,
     userUpdate,
     upload,
-    avatar
+    avatar,
+    counters
 }
 
